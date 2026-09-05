@@ -483,6 +483,17 @@ Issues and pull requests are the best place to see what's moving next.
 
 ---
 
+## Understanding the internals
+
+[`docs/`](docs/README.md) explains the whole system from first principles —
+what each phase does, why it's built that way, what else we could have used,
+and what each choice costs. Written to be read in order, with diagrams.
+
+Start with [why a symbol graph, not chunks](docs/01-why-symbol-graph.md) — it's
+the argument every other decision follows from.
+
+---
+
 ## Contributing
 
 Contributions are welcome — see `CONTRIBUTING.md`. The one rule that matters:
