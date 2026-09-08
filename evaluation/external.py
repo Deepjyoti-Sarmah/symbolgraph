@@ -44,6 +44,13 @@ class ExternalQuestionResult:
     baseline_tokens: int = 0
     context_tokens: int = 0
     savings_pct: float = 0.0
+    # The files that actually survived the token budget into the pack, and
+    # the fraction of expected_files among them. recall_at_10 scores the
+    # ranked candidate list, which is computed before the budget is applied
+    # and so cannot fall when the budget is cut; this scores the artifact the
+    # saving is claimed on. See ExternalReport.mean_pack_recall.
+    pack_files: tuple[str, ...] = ()
+    pack_recall: float = 0.0
 
 
 @dataclass(slots=True)
@@ -79,6 +86,14 @@ class ExternalReport:
     # instead of counted once regardless of size. This is the number a
     # savings claim should cite.
     aggregate_savings_pct: float = 0.0
+    # Mean fraction of a query's expected_files present in the context pack
+    # after the budget is applied. mean_recall_at_10 and this metric measure
+    # two different objects: the first scores `ranked_files` (pre-budget), the
+    # second scores `pack.file_paths` (post-budget). Only the second can
+    # respond to token_budget, so only the second can gate a savings claim --
+    # a saving produced by truncation shows up here as a recall drop and
+    # nowhere else.
+    mean_pack_recall: float = 0.0
 
 
 def load_external_questions(path: str | Path) -> list[ExternalQuestion]:
@@ -216,6 +231,12 @@ def run_external_evaluation(
         )
         context_tokens = pack.total_tokens
         savings = token_reduction(context_tokens, baseline_tokens) if baseline_tokens else 0.0
+        pack_files = pack.file_paths
+        pack_recall = (
+            len(q.expected_files & set(pack_files)) / len(q.expected_files)
+            if q.expected_files
+            else 0.0
+        )
 
         results.append(
             ExternalQuestionResult(
@@ -233,6 +254,8 @@ def run_external_evaluation(
                 baseline_tokens=baseline_tokens,
                 context_tokens=context_tokens,
                 savings_pct=savings,
+                pack_files=pack_files,
+                pack_recall=pack_recall,
             )
         )
 
@@ -245,6 +268,7 @@ def run_external_evaluation(
     mean_baseline = mean(r.baseline_tokens for r in results)
     mean_context = mean(r.context_tokens for r in results)
     mean_savings = mean(r.savings_pct for r in results)
+    mean_pack_recall = mean(r.pack_recall for r in results)
     aggregate_savings = token_reduction(mean_context, mean_baseline) if mean_baseline else 0.0
     p50 = statistics.median(latencies) if latencies else 0.0
     # p95 as 95th percentile
@@ -274,4 +298,5 @@ def run_external_evaluation(
         mean_context_tokens=mean_context,
         mean_savings_pct=mean_savings,
         aggregate_savings_pct=aggregate_savings,
+        mean_pack_recall=mean_pack_recall,
     )
