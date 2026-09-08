@@ -4,12 +4,19 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from symbolgraph.cli import _ensure_mcp_entry, cmd_init, cmd_uninstall
+from symbolgraph.cli import (
+    _ensure_mcp_entry,
+    _resolve_editor_path,
+    _write_codex_entry,
+    cmd_init,
+    cmd_uninstall,
+)
 from symbolgraph.editors import (
     EDITORS,
     SG_BLOCK_CONTENT,
     SG_BLOCK_START,
     atomic_write_text,
+    codex_config_path,
     codex_section_name,
     detect_editors,
     ensure_block_content,
@@ -20,6 +27,17 @@ from symbolgraph.editors import (
 
 
 class TestEditors(unittest.TestCase):
+    def setUp(self):
+        # `--agent all` covers codex, whose config lives outside the repo. Point
+        # it at a temp dir so no test can touch the real ~/.codex/config.toml.
+        self._codex_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._codex_home.cleanup)
+        patcher = unittest.mock.patch.dict(
+            "os.environ", {"CODEX_HOME": self._codex_home.name}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_editors_has_8(self):
         self.assertGreaterEqual(len(EDITORS), 8)
 
@@ -142,22 +160,41 @@ class TestEditors(unittest.TestCase):
 
     def test_codex_registers_each_project_separately(self):
         # ~/.codex/config.toml is global: a project-agnostic marker made every
-        # project after the first silently skip registration.
+        # project after the first silently skip registration. Driving
+        # _write_codex_entry directly keeps this off ~ expansion, which reads
+        # HOME on POSIX but USERPROFILE on Windows.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            home = root / "home"
+            config = root / "config.toml"
             a, b = root / "a", root / "b"
-            a.mkdir(), b.mkdir()
-            config = home / ".codex" / "config.toml"
-            with (
-                unittest.mock.patch.dict("os.environ", {"HOME": str(home)}),
-                unittest.mock.patch.object(Path, "home", lambda: home),
-            ):
-                cmd_init(str(a), agents=["codex"])
-                cmd_init(str(b), agents=["codex"])
+            a.mkdir()
+            b.mkdir()
+            self.assertEqual(_write_codex_entry(config, a), "written")
+            self.assertEqual(_write_codex_entry(config, b), "written")
+            self.assertEqual(_write_codex_entry(config, a), "already configured")
             text = config.read_text()
             self.assertIn(f"[mcp_servers.{codex_section_name(a)}]", text)
             self.assertIn(f"[mcp_servers.{codex_section_name(b)}]", text)
+
+    def test_codex_config_honors_codex_home(self):
+        # The env override is what keeps this suite (and `--agent all`) away
+        # from the real config on every platform.
+        self.assertEqual(
+            codex_config_path(), Path(self._codex_home.name) / "config.toml"
+        )
+        self.assertEqual(
+            _resolve_editor_path(Path("/repo"), "~/.codex/config.toml"),
+            codex_config_path(),
+        )
+
+    def test_init_all_never_touches_the_real_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cmd_init(tmp, agents=["all"])
+            written = Path(self._codex_home.name) / "config.toml"
+            self.assertTrue(written.exists())
+            self.assertIn(
+                f"[mcp_servers.{codex_section_name(Path(tmp))}]", written.read_text()
+            )
 
     def test_uninstall_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

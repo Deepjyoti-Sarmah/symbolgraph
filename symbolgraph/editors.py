@@ -130,6 +130,20 @@ def project_storage_slug(abs_path: str) -> str:
     return f"{base}-{h}"
 
 
+def codex_config_path() -> Path:
+    """Codex's config file.
+
+    Honors ``CODEX_HOME`` the way codex itself does, so we write where codex
+    actually reads. It also gives tests a cross-platform way to redirect this:
+    ``~`` expansion reads ``HOME`` on POSIX but ``USERPROFILE`` on Windows, so
+    patching ``HOME`` silently wrote into the real home directory there.
+    """
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home) / "config.toml"
+    return Path("~/.codex/config.toml").expanduser()
+
+
 def codex_section_name(root: Path) -> str:
     """The codex TOML table for one project — unique per project path.
 

@@ -31,6 +31,12 @@ this project uses [SemVer](https://semver.org/).
   supported configuration (the line even said `(ok)`), as is a non-empty
   embedding queue when nothing can drain it.
 - `sg init` no longer swallows git-hook installation failures; it reports them.
+- **Codex config resolution now honors `CODEX_HOME`**, as codex itself does, so
+  we write where codex reads. `~` expansion consults `HOME` on POSIX but
+  `USERPROFILE` on Windows, which made the location unpredictable there — and
+  made the test suite write into the real home directory on Windows CI. The
+  suite now redirects `CODEX_HOME` session-wide, so no test can reach a
+  developer's real `~/.codex/config.toml`.
 
 ### Added
 

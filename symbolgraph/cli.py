@@ -635,7 +635,13 @@ def _ensure_mcp_entry(
 
 def _resolve_editor_path(root_path: Path, config: str) -> Path:
     """Editor config paths are repo-relative unless they start with ``~``."""
-    return Path(config).expanduser() if config.startswith("~") else root_path / config
+    if not config.startswith("~"):
+        return root_path / config
+    if config.startswith("~/.codex/"):
+        from symbolgraph.editors import codex_config_path
+
+        return codex_config_path()
+    return Path(config).expanduser()
 
 
 def _write_instruction_block(path: Path) -> str:
