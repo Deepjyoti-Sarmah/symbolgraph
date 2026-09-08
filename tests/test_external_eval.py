@@ -252,6 +252,76 @@ class TestExternalScorer(unittest.TestCase):
             self.assertGreaterEqual(aggregates[1], aggregates[2])
             self.assertGreater(aggregates[0], aggregates[2])
 
+    def test_pack_recall_catches_truncation_that_recall_at_10_cannot(self):
+        # The savings claim is made on the context pack, but recall_at_10 is
+        # scored on `ranked_files`, which is built before the token budget is
+        # applied. So a budget small enough to drop every definition still
+        # reports perfect recall next to a near-perfect saving. pack_recall
+        # scores the pack itself and is what falls.
+        from evaluation.external import ExternalQuestion, run_external_evaluation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            body = "\n".join(
+                f'def handler_{i}():\n    """Handler {i} processes the request payload."""\n    return {i}\n'
+                for i in range(60)
+            )
+            (repo / "expected.py").write_text(body, encoding="utf-8")
+
+            q = ExternalQuestion(
+                query="handler processes request", expected_files=frozenset({"expected.py"})
+            )
+            # A budget too small for even one definition to fit.
+            report = run_external_evaluation(
+                repo, [q], provider=None, top_k=30, file_k=10, token_budget=5
+            )
+            qr = report.questions[0]
+
+            # The file is retrieved, so the pre-budget metric is perfect...
+            self.assertEqual(qr.recall_at_10, 1.0)
+            # ...and the saving looks excellent...
+            self.assertGreater(qr.savings_pct, 0.9)
+            # ...but nothing survived the budget, so the pack is empty and the
+            # "saving" bought an agent nothing.
+            self.assertEqual(qr.pack_files, ())
+            self.assertEqual(qr.pack_recall, 0.0)
+            self.assertEqual(report.mean_pack_recall, 0.0)
+
+    def test_pack_recall_responds_to_budget_while_recall_at_10_does_not(self):
+        # The divergence that motivates the metric: across budgets, the
+        # ranked-list recall is constant by construction (the budget is applied
+        # after ranking), so a recall gate on it cannot fail no matter how hard
+        # the pack is truncated. pack_recall is monotonic in the budget.
+        from evaluation.external import ExternalQuestion, run_external_evaluation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            body = "\n".join(
+                f'def handler_{i}():\n    """Handler {i} processes the request payload."""\n    return {i}\n'
+                for i in range(60)
+            )
+            (repo / "expected.py").write_text(body, encoding="utf-8")
+
+            q = ExternalQuestion(
+                query="handler processes request", expected_files=frozenset({"expected.py"})
+            )
+            list_recalls = []
+            pack_recalls = []
+            for budget in (5, 800):
+                report = run_external_evaluation(
+                    repo, [q], provider=None, top_k=30, file_k=10, token_budget=budget
+                )
+                list_recalls.append(report.mean_recall_at_10)
+                pack_recalls.append(report.mean_pack_recall)
+
+            # Unchanged across a 160x budget cut — this is the blind spot.
+            self.assertEqual(list_recalls[0], list_recalls[1])
+            # pack_recall separates the two runs.
+            self.assertLess(pack_recalls[0], pack_recalls[1])
+            self.assertEqual(pack_recalls[1], 1.0)
+
     def test_bucket_assignment_boundaries(self):
         # Pre-registered buckets: <1k, 1k-4k, >4k by baseline_tokens.
         from benchmarks.run_external import _bucket_aggregates, baseline_bucket

@@ -86,6 +86,7 @@ def _bucket_aggregates(questions: list[dict]) -> dict:
                 "mean_context_tokens": None,
                 "aggregate_savings_pct": None,
                 "mean_recall_at_10": None,
+                "mean_pack_recall": None,
             }
             continue
         mean_baseline = mean(q["baseline_tokens"] for q in members)
@@ -96,6 +97,13 @@ def _bucket_aggregates(questions: list[dict]) -> dict:
             "mean_context_tokens": mean_context,
             "aggregate_savings_pct": token_reduction(mean_context, mean_baseline) if mean_baseline else 0.0,
             "mean_recall_at_10": mean(q["recall_at_10"] for q in members),
+            # None, not 0.0, for reports written before pack_recall existed —
+            # 0.0 would read as "the pack contained nothing".
+            "mean_pack_recall": (
+                mean(q["pack_recall"] for q in members)
+                if all("pack_recall" in q for q in members)
+                else None
+            ),
         }
     return out
 
@@ -294,6 +302,8 @@ def main() -> int:
                         "baseline_tokens": r.baseline_tokens,
                         "context_tokens": r.context_tokens,
                         "savings_pct": r.savings_pct,
+                        "pack_files": list(r.pack_files),
+                        "pack_recall": r.pack_recall,
                         "baseline_bucket": bucket,
                     }
                 )
@@ -312,6 +322,7 @@ def main() -> int:
                 "mean_context_tokens": report.mean_context_tokens,
                 "mean_savings_pct": report.mean_savings_pct,
                 "aggregate_savings_pct": report.aggregate_savings_pct,
+                "mean_pack_recall": report.mean_pack_recall,
                 "buckets": _bucket_aggregates(qdicts),
                 "questions": qdicts,
             }
@@ -352,7 +363,8 @@ def main() -> int:
             print(f"\nResults for {repo_url} @ {actual_commit[:8]} ({source_dir}) budget {budget}", file=sys.stderr)
             print(f"  Questions: {block['total_questions']}", file=sys.stderr)
             print(f"  P@10: {block['mean_precision_at_10']:.3f}", file=sys.stderr)
-            print(f"  R@10: {block['mean_recall_at_10']:.3f}", file=sys.stderr)
+            print(f"  R@10 (ranked list, pre-budget): {block['mean_recall_at_10']:.3f}", file=sys.stderr)
+            print(f"  Pack recall (post-budget): {block['mean_pack_recall']:.3f}", file=sys.stderr)
             print(f"  MRR: {block['mean_reciprocal_rank']:.3f}", file=sys.stderr)
             print(f"  p50 latency: {block['p50_latency_seconds']*1000:.1f} ms", file=sys.stderr)
             print(f"  p95 latency: {block['p95_latency_seconds']*1000:.1f} ms", file=sys.stderr)
