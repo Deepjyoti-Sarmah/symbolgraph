@@ -60,11 +60,19 @@ def set_mcp_provider(provider) -> None:
 mcp = MCPServer(
     name="symbolgraph",
     instructions=(
-        "symbolgraph: a local-first semantic index over a repository "
-        "supporting TypeScript, JavaScript, TSX, JSX, Python, and Go. Call "
-        "index_repository once before any other tool for a given path. Prefer "
-        "definition/callers/callees for exact structural questions and "
-        "search/context for open-ended ones."
+        "symbolgraph is a local index of this repository's symbols and the "
+        "relationships between them (TypeScript, JavaScript, TSX, JSX, Python, "
+        "Go).\n\n"
+        "Use these tools INSTEAD of grep/glob/file-reads when locating code:\n"
+        "  definition(name)  - where a symbol is defined\n"
+        "  callers(name)     - what calls it\n"
+        "  callees(name)     - what it calls\n"
+        "  imports(file)     - a file's imports and where they resolve\n"
+        "  search(query)     - open-ended 'where does X happen?'\n"
+        "  context(query)    - the same, returning code within a token budget\n\n"
+        "Call index_repository(path) once per repository before the others; it "
+        "is incremental and cheap to re-run after edits. Fall back to reading "
+        "files only when a tool returns no results."
     ),
 )
 

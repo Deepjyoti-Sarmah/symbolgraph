@@ -93,17 +93,31 @@ and it's gone — your source is never modified.
 ```bash
 $ sg init --agent all
 Wrote .mcp.json
+Wrote CLAUDE.md
 Wrote .cursor/mcp.json
+Wrote AGENTS.md
 Wrote .vscode/mcp.json
+Wrote .github/copilot-instructions.md
 Wrote opencode.json
 Wrote .gemini/settings.json
-Wrote .github/copilot-instructions.md
-Wrote AGENTS.md
-already configured: ~/.codex/config.toml
+Wrote GEMINI.md
+Wrote ~/.codex/config.toml
+
+Next: run `sg index .`, then restart your editor so it picks
+up the MCP server. `sg doctor .` verifies both halves are wired.
 ```
 
-This detects which coding agents you have installed and writes the MCP config
-for each one. Re-running it is safe — anything already correct is left alone.
+This detects which coding agents you have installed and writes **two** things
+per agent: the MCP server config, and a short instruction block in the file that
+agent actually reads — `CLAUDE.md` for Claude Code, `GEMINI.md` for Gemini,
+`AGENTS.md` for Codex/Cursor/OpenCode, `.github/copilot-instructions.md` for
+Copilot.
+
+Both halves matter. An agent that has the tools registered but was never told
+about them keeps grepping; the instruction block is what makes it reach for the
+index instead. The block is fenced by `<!-- sg-block-version -->` markers, so
+re-running `sg init` upgrades it in place and never touches your own notes, and
+`sg uninstall` removes it cleanly.
 
 **3. Restart your editor, and ask it something**
 
@@ -160,7 +174,8 @@ Add this to your agent's MCP config file:
 ```
 
 `sg init --agent all` writes this automatically for Claude Code, Cursor,
-VS Code, OpenCode, Gemini, Copilot, Pi and Codex.
+VS Code, OpenCode, Gemini, Copilot, Pi and Codex — each in that editor's own
+shape (VS Code keys servers under `servers`, OpenCode wants an argv list).
 </details>
 
 ---
@@ -187,13 +202,20 @@ $ sg doctor .
 ✓ index present: .sg/index.sqlite
 ✓ lock free: free
 ✓ embedding queue: pending=0
+✓ mcp registered: .mcp.json
+✓ agent instructions: CLAUDE.md
 ✗ git hook: no hook — run `sg init`
-✗ embedding backend: none - FTS+graph only (ok)
+✓ embedding backend: none - FTS+graph only (ok)
 ```
 
-A `✗` is not necessarily a problem. The last two lines above are what you see
-without Ollama installed and without the git hook — search still works, it just
-uses full-text plus the graph. Each line tells you the command that fixes it.
+`mcp registered` and `agent instructions` are the two halves of `sg init`. If
+your agent isn't calling the tools, check that second line first — a registered
+server the agent was never told about produces zero tool calls, and that looks
+exactly like the tools not working.
+
+A `✗` is not necessarily a problem. Each line tells you the command that fixes
+it. Running without Ollama is a supported setup, not a fault — search still
+works, it just uses full-text plus the graph.
 
 <details>
 <summary><b>All 18 commands</b></summary>

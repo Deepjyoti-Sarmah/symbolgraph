@@ -99,33 +99,49 @@ cost, paid once per session, against better tool selection on every call.
 
 ## Zero-config setup
 
-`sg init --agent all` detects installed agents and writes each one's MCP config:
+`sg init --agent all` detects installed agents and, for each, writes both the
+MCP config **and** the instruction block into the file that agent reads:
 
 ```mermaid
 flowchart TD
     I["sg init --agent all"] --> D["detect what's installed"]
-    D --> C1[".mcp.json — Claude Code"]
-    D --> C2[".cursor/mcp.json"]
-    D --> C3[".vscode/mcp.json"]
-    D --> C4["opencode.json"]
-    D --> C5[".gemini/settings.json"]
-    D --> C6[".github/copilot-instructions.md"]
-    D --> C7["AGENTS.md"]
-    D --> C8["~/.codex/config.toml"]
+    D --> S["MCP server config"]
+    D --> T["instruction block"]
+    S --> C1[".mcp.json — Claude Code"]
+    S --> C2[".cursor/mcp.json"]
+    S --> C3[".vscode/mcp.json — servers key"]
+    S --> C4["opencode.json"]
+    S --> C5[".gemini/settings.json"]
+    S --> C8["~/.codex/config.toml"]
+    T --> B1["CLAUDE.md — Claude Code"]
+    T --> B2["GEMINI.md — Gemini"]
+    T --> B3["AGENTS.md — Codex, Cursor, OpenCode, Pi"]
+    T --> B4[".github/copilot-instructions.md"]
 ```
+
+Registering the server is only half the job. An agent holding fifteen tools it
+was never told about keeps grepping — measured at zero tool calls across nine
+runs. The instruction block is what moves it. Each agent gets the block in the
+file it actually loads: Claude Code reads `CLAUDE.md` and does **not** read
+`AGENTS.md`, which is why writing only the latter looked like a no-op.
 
 Real output on this repo:
 
 ```
 $ sg init --agent all
 Wrote .mcp.json
+Wrote CLAUDE.md
 Wrote .cursor/mcp.json
+Wrote AGENTS.md
 Wrote .vscode/mcp.json
+Wrote .github/copilot-instructions.md
 Wrote opencode.json
 Wrote .gemini/settings.json
-Wrote .github/copilot-instructions.md
-Wrote AGENTS.md
-already configured: ~/.codex/config.toml
+Wrote GEMINI.md
+Wrote ~/.codex/config.toml
+
+Next: run `sg index .`, then restart your editor so it picks
+up the MCP server. `sg doctor .` verifies both halves are wired.
 ```
 
 The config itself is trivial:
@@ -141,7 +157,7 @@ will re-run it. That means:
 
 - **Never clobber** an existing config; merge into it
 - **Detect** an existing correct entry and report `already configured`
-- **Atomic writes** (`symbolgraph/editors.py:53`) — write to a temp file,
+- **Atomic writes** (`symbolgraph/editors.py:169`) — write to a temp file,
   `fsync`, then `os.replace`. A crash mid-write must not leave a user's
   `settings.json` truncated. Corrupting an editor config is a serious failure
   for a tool that's supposed to be helpful.

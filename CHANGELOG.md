@@ -6,6 +6,45 @@ this project uses [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sg init` left agents with tools they never called.** It registered the MCP
+  server but wrote no instruction file for Claude Code — and the one instruction
+  file it did write, `AGENTS.md`, is not a file Claude Code reads. Every editor
+  now gets the guidance block in the file it actually loads (`CLAUDE.md`,
+  `GEMINI.md`, `AGENTS.md`, `.github/copilot-instructions.md`), and the block
+  itself names the MCP tools and says to prefer them over grep.
+- **Codex registration silently skipped every project after the first.**
+  `~/.codex/config.toml` is global and the "already configured" marker was the
+  project-agnostic string `sg-mcp`, so the second repo you ran `sg init` in was
+  a no-op. The marker is now this project's own `[mcp_servers.sg-<slug>]` table.
+- **VS Code never saw the server** — its `mcp.json` keys servers under
+  `servers`, not `mcpServers`, and wants an explicit `"type": "stdio"`.
+- **OpenCode never saw the server** — its entry takes an argv list
+  (`"command": ["sg-mcp"]`) plus `"type": "local"`, not a bare string.
+- **Bumping the instruction-block version appended a second copy** instead of
+  upgrading the existing one; blocks of any version are now replaced in place.
+- **`sg uninstall` left the instruction blocks and the Codex table behind.** It
+  now removes everything `sg init` wrote, preserving any of your own content in
+  a shared file and deleting a file that only ever held our block.
+- **`sg doctor` exited 1 on a healthy setup.** Having no embedding backend is a
+  supported configuration (the line even said `(ok)`), as is a non-empty
+  embedding queue when nothing can drain it.
+- `sg init` no longer swallows git-hook installation failures; it reports them.
+
+### Added
+
+- `sg doctor` checks both halves of the wiring: `mcp registered` and `agent
+  instructions`. A registered server the agent was never told about produces
+  zero tool calls and otherwise looks identical to broken tools.
+- `sg init` detects Claude Code, Gemini and Copilot projects, and prints the
+  next steps (index, restart the editor, verify with `sg doctor`).
+
+### Changed
+
+- The MCP server's own `instructions` string now lists each tool and states the
+  "use these instead of grep/glob/file-reads" rule.
+
 - Packaging/publish readiness.
 - Removed the external benchmark data (`benchmarks/*_queries.json`,
   `benchmarks/results/`) and its attribution file — those query sets

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "symbolgraph": {
+      "command": "sg-mcp"
+    }
+  }
+}

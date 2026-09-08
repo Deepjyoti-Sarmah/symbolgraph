@@ -377,6 +377,10 @@ def cmd_doctor(root: str = ".", verbose: bool = False) -> int:
     p = Path(root)
     db_path = default_db_path(root)
     checks: list[tuple[str, bool, str]] = []
+    try:
+        provider = _detect_provider()
+    except Exception:
+        provider = None
     # .sg exists
     has_db = Path(db_path).exists()
     checks.append(("index present", has_db, db_path if has_db else "no index — run `sg index .`"))
@@ -396,11 +400,69 @@ def cmd_doctor(root: str = ".", verbose: bool = False) -> int:
         if has_db:
             qs = queue_status(db_path)  # type: ignore
             pending = qs.get("PENDING", 0) + qs.get("FAILED", 0) - qs.get("exhausted", 0)
-            checks.append(("embedding queue", pending == 0, f"pending={pending}"))
+            if provider is None:
+                # Nothing can drain the queue without a backend, and running
+                # without one is supported — don't report it as a fault.
+                checks.append(("embedding queue", True, f"pending={pending} (no backend; not needed)"))
+            else:
+                checks.append(("embedding queue", pending == 0, f"pending={pending}"))
         else:
             checks.append(("embedding queue", True, "no db"))
     except Exception as e:
         checks.append(("embedding queue", False, str(e)))
+    # MCP registration + agent instructions. A registered server the agent was
+    # never told about produces zero tool calls, so both halves are checked.
+    from symbolgraph.editors import EDITORS, SG_BLOCK_START
+
+    wired = []
+    for info in EDITORS.values():
+        config = info.get("config_path")
+        if not config:
+            continue
+        cfg_path = _resolve_editor_path(p, config)
+        if not cfg_path.exists():
+            continue
+        try:
+            if cfg_path.suffix == ".toml":
+                from symbolgraph.editors import codex_section_name
+
+                if f"[mcp_servers.{codex_section_name(p)}]" in cfg_path.read_text(errors="ignore"):
+                    wired.append(config)
+                continue
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if any(
+                isinstance(data.get(k), dict) and "symbolgraph" in data[k]
+                for k in ("mcpServers", "mcp", "servers")
+            ):
+                wired.append(config)
+        except (json.JSONDecodeError, OSError):
+            continue
+    checks.append(
+        (
+            "mcp registered",
+            bool(wired),
+            ", ".join(wired) if wired else "no MCP config — run `sg init`",
+        )
+    )
+
+    instructed = []
+    for info in EDITORS.values():
+        rel = info.get("instructions_path")
+        if not rel:
+            continue
+        doc = p / rel
+        if doc.exists() and SG_BLOCK_START in doc.read_text(errors="ignore"):
+            instructed.append(rel)
+    checks.append(
+        (
+            "agent instructions",
+            bool(instructed),
+            ", ".join(sorted(set(instructed)))
+            if instructed
+            else "no sg block — agent will keep grepping; run `sg init`",
+        )
+    )
+
     # git hook
     try:
         from indexing.git_hooks import _git_hooks_dir
@@ -413,8 +475,9 @@ def cmd_doctor(root: str = ".", verbose: bool = False) -> int:
         checks.append(("git hook", False, "unknown"))
     # embedding backend
     try:
-        prov = _detect_provider()
-        checks.append(("embedding backend", prov is not None, prov.model_id if prov else "none - FTS+graph only (ok)"))  # type: ignore[operator]
+        # No backend is a supported configuration (FTS + graph), not a failure:
+        # failing it made `sg doctor` exit 1 on a perfectly healthy setup.
+        checks.append(("embedding backend", True, provider.model_id if provider else "none - FTS+graph only (ok)"))
     except Exception as e:
         checks.append(("embedding backend", False, str(e)))
 
@@ -528,10 +591,13 @@ def _require_provider_or_explain() -> EmbeddingProvider:
     return provider
 
 
-def _ensure_mcp_entry(path: Path, container_key: str | None) -> str:
+def _ensure_mcp_entry(
+    path: Path, container_key: str | None, entry: dict[str, object] | None = None
+) -> str:
     if container_key is None:
         return "written"
-    entry: dict[str, object] = {"command": "sg-mcp"}
+    if entry is None:
+        entry = {"command": "sg-mcp"}
     if path.exists():
         # An unreadable or non-object config is the user's file, not ours to
         # replace: rewriting it would silently discard whatever they had.
@@ -567,103 +633,175 @@ def _ensure_mcp_entry(path: Path, container_key: str | None) -> str:
         return "written"
 
 
+def _resolve_editor_path(root_path: Path, config: str) -> Path:
+    """Editor config paths are repo-relative unless they start with ``~``."""
+    return Path(config).expanduser() if config.startswith("~") else root_path / config
+
+
+def _write_instruction_block(path: Path) -> str:
+    """Add (or upgrade) the sg guidance block in an agent instruction file."""
+    from symbolgraph.editors import atomic_write_text, ensure_block_content
+
+    existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+    new_content, already = ensure_block_content(existing)
+    if already:
+        return "already configured"
+    atomic_write_text(path, new_content)
+    return "written"
+
+
+def _write_codex_entry(path: Path, root_path: Path) -> str:
+    """Append this project's table to the global codex config, once."""
+    from symbolgraph.editors import atomic_write_text, codex_section_name
+
+    section = codex_section_name(root_path)
+    header = f"[mcp_servers.{section}]"
+    existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+    if header in existing:
+        return "already configured"
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    atomic_write_text(path, f'{existing}\n{header}\ncommand = "sg-mcp"\n')
+    return "written"
+
+
 def cmd_init(root: str = ".", *, agents: list[str] | None = None) -> dict[str, str]:
-    from symbolgraph.editors import (
-        EDITORS,
-        atomic_write_text,
-        detect_editors,
-        project_storage_slug,
-    )
+    """Register the MCP server *and* tell each agent to use it.
+
+    Writing the server config alone leaves the agent with tools it never calls;
+    each editor also gets the guidance block in the instruction file it really
+    reads (``CLAUDE.md`` for Claude Code, ``GEMINI.md`` for Gemini, and so on).
+    """
+    from symbolgraph.editors import EDITORS, detect_editors
 
     root_path = Path(root)
     if agents is None or agents == ["auto"]:
         agents = detect_editors(root_path)
-        if agents == ["claude"]:
-            agents = ["claude"]
-        # auto: claude always + detected
+        # Claude Code needs no marker file to be present, so always cover it.
         if "claude" not in agents:
             agents = ["claude"] + agents
     elif "all" in agents:
         agents = list(EDITORS.keys())
-    # map agent -> target path/container
-    editor_targets: dict[str, tuple[Path, str | None]] = {}
-    for ag in agents:
-        info = EDITORS.get(ag)
+
+    results: dict[str, str] = {}
+    # Several editors share an instruction file (AGENTS.md, copilot); write each
+    # path once so a single run never reports "already configured" for a file it
+    # just created.
+    seen: set[Path] = set()
+
+    def record(path: Path, status: str) -> None:
+        if path in seen:
+            return
+        seen.add(path)
+        results[str(path)] = status
+
+    for agent in agents:
+        info = EDITORS.get(agent)
         if not info:
             continue
-        cfg = info["config_path"]
-        # handle ~/ expansion for codex
-        if cfg.startswith("~"):
-            cfg_path = Path(cfg).expanduser()
-        else:
-            cfg_path = root_path / cfg
-        editor_targets[ag] = (cfg_path, info["container_key"])
-    results: dict[str, str] = {}
-    for ag, (path, container_key) in editor_targets.items():
-        if container_key is None:
-            # copilot/pi instruction files — versioned block with upgrade
-            from symbolgraph.editors import SG_BLOCK_START, ensure_block_content
 
-            existing = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
-            if SG_BLOCK_START in existing:
-                results[str(path)] = "already configured"
-            else:
-                new_content, already = ensure_block_content(existing)
-                if already:
-                    results[str(path)] = "already configured"
+        config = info.get("config_path")
+        if config:
+            path = _resolve_editor_path(root_path, config)
+            if path not in seen:
+                if path.suffix == ".toml":
+                    record(path, _write_codex_entry(path, root_path))
                 else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_text(path, new_content)
-                    results[str(path)] = "written"
-            continue
-        if path.suffix == ".toml":
-            # codex TOML — append section, not JSON, sanitize
-            from symbolgraph.editors import toml_escape
+                    record(path, _ensure_mcp_entry(path, info["container_key"], info.get("entry")))
 
-            marker = 'sg-mcp'
-            if path.exists() and marker in path.read_text(encoding="utf-8", errors="ignore"):
-                results[str(path)] = "already configured"
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                slug = project_storage_slug(str(root_path.resolve()))
-                # sanitize slug for TOML
-                slug_esc = toml_escape(slug)
-                toml_snippet = f'\n[mcp_servers.sg-{slug_esc}]\ncommand = "sg-mcp"\n'
-                # atomic append
-                existing = path.read_text(encoding="utf-8") if path.exists() else ""
-                atomic_write_text(path, existing + toml_snippet)
-                results[str(path)] = "written"
-            continue
-        status = _ensure_mcp_entry(path, container_key)
-        results[str(path)] = status
+        instructions = info.get("instructions_path")
+        if instructions:
+            path = _resolve_editor_path(root_path, instructions)
+            if path not in seen:
+                record(path, _write_instruction_block(path))
+
     # git hooks
     try:
         from indexing.git_hooks import install_hooks
 
         install_hooks(root_path)
-    except Exception:
-        pass
+    except Exception as error:
+        results["git hooks"] = f"skipped ({error})"
     return results
 
 
 def cmd_uninstall(root: str = ".") -> dict[str, str]:
     from indexing.git_hooks import uninstall_hooks
+    from symbolgraph.editors import (
+        EDITORS,
+        atomic_write_text,
+        codex_section_name,
+        remove_block_content,
+    )
 
     root_path = Path(root)
-    removed = {}
-    for name in [".mcp.json", ".vscode/mcp.json", ".cursor/mcp.json", "opencode.json"]:
-        p = root_path / name
-        if p.exists():
-            # remove sg entry if present
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                for k in ("mcpServers", "mcp", "servers"):
-                    if isinstance(data.get(k), dict) and "symbolgraph" in data[k]:
-                        del data[k]["symbolgraph"]
-                        p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-                        removed[str(p)] = "removed"
-            except Exception:
-                pass
+    removed: dict[str, str] = {}
+
+    config_paths = {
+        info["config_path"] for info in EDITORS.values() if info.get("config_path")
+    }
+    instruction_paths = {
+        info["instructions_path"] for info in EDITORS.values() if info.get("instructions_path")
+    }
+
+    for name in sorted(config_paths):
+        p = _resolve_editor_path(root_path, name)
+        if not p.exists():
+            continue
+        if p.suffix == ".toml":
+            # Drop only this project's table from the shared codex config.
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            header = f"[mcp_servers.{codex_section_name(root_path)}]"
+            if header not in text:
+                continue
+            kept: list[str] = []
+            dropping = False
+            for line in text.splitlines(keepends=True):
+                stripped = line.strip()
+                if stripped == header:
+                    dropping = True
+                    continue
+                if dropping:
+                    # A new table header ends our section; blank/key lines don't.
+                    if stripped.startswith("[") and stripped.endswith("]"):
+                        dropping = False
+                    else:
+                        continue
+                kept.append(line)
+            atomic_write_text(p, "".join(kept).strip("\n") + "\n")
+            removed[str(p)] = "removed"
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        changed = False
+        for k in ("mcpServers", "mcp", "servers"):
+            container = data.get(k)
+            if isinstance(container, dict) and "symbolgraph" in container:
+                del container["symbolgraph"]
+                changed = True
+        if changed:
+            p.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            removed[str(p)] = "removed"
+
+    for name in sorted(instruction_paths):
+        p = _resolve_editor_path(root_path, name)
+        if not p.exists():
+            continue
+        text = p.read_text(encoding="utf-8", errors="ignore")
+        new_text, stripped_block = remove_block_content(text)
+        if not stripped_block:
+            continue
+        if new_text:
+            atomic_write_text(p, new_text)
+        else:
+            # The file existed only to carry our block.
+            p.unlink()
+        removed[str(p)] = "removed"
+
     for h in uninstall_hooks(root_path):
         removed[h] = "removed"
     return removed
@@ -1251,8 +1389,13 @@ def main(argv: list[str] | None = None) -> int:  # pyright: ignore[reportGeneral
             for file_path, status in results.items():
                 if status == "already configured":
                     print(f"already configured: {file_path}")
+                elif status.startswith("skipped"):
+                    print(f"{status}: {file_path}")
                 else:
                     print(f"Wrote {file_path}")
+            print()
+            print("Next: run `sg index .`, then restart your editor so it picks")
+            print("up the MCP server. `sg doctor .` verifies both halves are wired.")
             return 0
 
         if args.command == "uninstall":

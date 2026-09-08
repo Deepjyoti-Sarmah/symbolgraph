@@ -334,10 +334,11 @@ class TestCliInit(unittest.TestCase):
         cursor_path = self.root / ".cursor" / "mcp.json"
         self.assertTrue(vscode_path.exists())
         self.assertTrue(cursor_path.exists())
-        for p in (vscode_path, cursor_path):
-            data = json.loads(p.read_text(encoding="utf-8"))
-            self.assertIn("symbolgraph", data["mcpServers"])
-            self.assertEqual(data["mcpServers"]["symbolgraph"]["command"], "sg-mcp")
+        # Cursor keys servers under "mcpServers"; VS Code under "servers".
+        cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+        self.assertEqual(cursor["mcpServers"]["symbolgraph"]["command"], "sg-mcp")
+        vscode = json.loads(vscode_path.read_text(encoding="utf-8"))
+        self.assertEqual(vscode["servers"]["symbolgraph"]["command"], "sg-mcp")
         self.assertEqual(results[str(vscode_path)], "written")
         self.assertEqual(results[str(cursor_path)], "written")
 
@@ -351,7 +352,9 @@ class TestCliInit(unittest.TestCase):
         self.assertEqual(data["foo"], "bar")
         self.assertIn("mcp", data)
         self.assertIn("symbolgraph", data["mcp"])
-        self.assertEqual(data["mcp"]["symbolgraph"]["command"], "sg-mcp")
+        # opencode takes an argv list plus an explicit transport.
+        self.assertEqual(data["mcp"]["symbolgraph"]["command"], ["sg-mcp"])
+        self.assertEqual(data["mcp"]["symbolgraph"]["type"], "local")
         self.assertEqual(results[str(opencode_path)], "written")
 
     def test_init_does_not_create_vscode_when_dir_missing(self):
